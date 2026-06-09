@@ -960,6 +960,19 @@ export class LlamaCpp implements LLM {
    */
   private async resolveModel(modelUri: string): Promise<string> {
     this.ensureModelCacheDir();
+    // Short-circuit when the model is already cached: skips the HF Hub HEAD
+    // request that hangs on captive portals / offline networks.
+    const hfRef = parseHfUri(modelUri);
+    if (hfRef) {
+      const filename = hfRef.file.split("/").pop();
+      if (filename) {
+        const localPath = join(this.modelCacheDir, filename);
+        if (existsSync(localPath)) {
+          validateGgufFile(localPath, modelUri);
+          return localPath;
+        }
+      }
+    }
     // resolveModelFile handles HF URIs and downloads to the cache dir
     const { resolveModelFile } = await loadNodeLlamaCpp();
     const modelPath = await resolveModelFile(modelUri, this.modelCacheDir);

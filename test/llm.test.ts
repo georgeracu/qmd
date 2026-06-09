@@ -8,6 +8,9 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll, vi } from "vitest";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   LlamaCpp,
   getDefaultLlamaCpp,
@@ -473,6 +476,89 @@ describe("LlamaCpp model resolution (config > env > default)", () => {
     } finally {
       if (prev === undefined) delete process.env.QMD_EMBED_MODEL;
       else process.env.QMD_EMBED_MODEL = prev;
+    }
+  });
+});
+
+describe("LlamaCpp.resolveModel offline cache short-circuit", () => {
+  // A minimal valid GGUF header is "GGUF" magic + version (uint32) + tensor_count (uint64)
+  // + metadata_kv_count (uint64). validateGgufFile only checks the magic bytes via
+  // inspectGgufFile, so a 4-byte file with the magic is sufficient for unit tests.
+  function writeFakeGguf(path: string): void {
+    writeFileSync(path, Buffer.from("GGUF"));
+  }
+
+  test("returns cached path without calling resolveModelFile when file exists", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "qmd-resolve-model-"));
+    const filename = "embeddinggemma-300M-Q8_0.gguf";
+    writeFakeGguf(join(cacheDir, filename));
+
+    const resolveModelFile = vi.fn();
+    setNodeLlamaCppModuleForTest({
+      LlamaLogLevel: { error: "error" },
+      resolveModelFile,
+      LlamaChatSession: vi.fn() as any,
+      getLlama: vi.fn(),
+    });
+
+    try {
+      const llm = new LlamaCpp({ modelCacheDir: cacheDir }) as any;
+      const resolved = await llm.resolveModel(`hf:ggml-org/embeddinggemma-300M-GGUF/${filename}`);
+
+      expect(resolved).toBe(join(cacheDir, filename));
+      expect(resolveModelFile).not.toHaveBeenCalled();
+    } finally {
+      setNodeLlamaCppModuleForTest(null);
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  test("falls through to resolveModelFile when cache miss", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "qmd-resolve-model-"));
+    const downloadedPath = join(cacheDir, "downloaded.gguf");
+    writeFakeGguf(downloadedPath);
+
+    const resolveModelFile = vi.fn(async () => downloadedPath);
+    setNodeLlamaCppModuleForTest({
+      LlamaLogLevel: { error: "error" },
+      resolveModelFile,
+      LlamaChatSession: vi.fn() as any,
+      getLlama: vi.fn(),
+    });
+
+    try {
+      const llm = new LlamaCpp({ modelCacheDir: cacheDir }) as any;
+      const uri = "hf:ggml-org/embeddinggemma-300M-GGUF/not-cached.gguf";
+      const resolved = await llm.resolveModel(uri);
+
+      expect(resolved).toBe(downloadedPath);
+      expect(resolveModelFile).toHaveBeenCalledWith(uri, cacheDir);
+    } finally {
+      setNodeLlamaCppModuleForTest(null);
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  test("falls through for non-hf URIs (local paths)", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "qmd-resolve-model-"));
+    const localPath = join(cacheDir, "local.gguf");
+    writeFakeGguf(localPath);
+
+    const resolveModelFile = vi.fn(async () => localPath);
+    setNodeLlamaCppModuleForTest({
+      LlamaLogLevel: { error: "error" },
+      resolveModelFile,
+      LlamaChatSession: vi.fn() as any,
+      getLlama: vi.fn(),
+    });
+
+    try {
+      const llm = new LlamaCpp({ modelCacheDir: cacheDir }) as any;
+      await llm.resolveModel(localPath);
+      expect(resolveModelFile).toHaveBeenCalledWith(localPath, cacheDir);
+    } finally {
+      setNodeLlamaCppModuleForTest(null);
+      rmSync(cacheDir, { recursive: true, force: true });
     }
   });
 });

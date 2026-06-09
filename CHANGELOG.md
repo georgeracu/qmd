@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `LlamaCpp.resolveModel()` no longer makes a HuggingFace Hub HEAD request when
+  the model file is already present in the local cache. Previously, every model
+  load (embed/rerank/generate) hit `huggingface.co` via node-llama-cpp's
+  `resolveModelFile`, which would hang on captive portals or offline networks
+  even though the model was cached. Cached files are still validated as GGUF
+  before being returned.
+
 ### Documentation
 
 - README: documented collection filtering (`-c` semantics), the `collection
